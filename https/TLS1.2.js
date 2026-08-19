@@ -1,7 +1,6 @@
 const net = require('node:net');
 const crypto = require('node:crypto');
 
-
 main();
 
 async function main(){
@@ -22,18 +21,51 @@ async function main(){
 }
 
 
+function BuildHandshake(host, ) {
+
+    // >>> Layer 2: Handshake Protocol
+    // Information: https://datatracker.ietf.org/doc/html/rfc5246#section-7.4
+    const handshake = Buffer.from([0x01]); // 0x01 means ClientHello message type
+    const body = buildClientHelloPayload(host);
+    const bodyLength = toUint24BE(body.length);
+
+    const handshakeMessage = Buffer.concat([
+        handshake,
+        bodyLength,
+        body
+    ]);
+
+    // >>> Layer 1: TLS Record Protocol
+    // Information: https://datatracker.ietf.org/doc/html/rfc5246#section-6.2.1
+    const recordType = Buffer.from([0x16]); // 0x16 means handshake record type
+    const version = Buffer.from([0x03, 0x03]);// 0x03 0x03 means TLS 1.2
+    const recordLength = toUint16BE(handshakeMessage.length);
+
+    const tlsRecord = Buffer.concat([
+        recordType,
+        version,
+        recordLength,
+        handshakeMessage
+    ]);
+
+    return tlsRecord;
+
+}
+
 function buildClientHelloPayload(targetHost) {
 
+    // >>>>>>>>>>>>>>>>>>>> Payload Structure
+    // [2x version]
+    // [32x random]
+    // [1x sessionIdLength][32x sessionId]
+    // [2x cipherSuitesLength][?x cipherSuites]
+    // [1x compressionMethodsLength][?x compressionMethods]
+    // [2x extensionsLength][?x extensionsPayload]
+    // >>>>>>>>>>>>>>>>>>>> Payload Structure
+    
+    
     // === Version ===
-    // This value means TLS 1.2, the reason why we use 0x3 0x3 is because of this table
-    // | TLS Version | Hex |
-    // |-------------|-----|
-    // | SSL 3.0     | 0x3 0x0 |
-    // | TLS 1.0     | 0x3 0x1 |
-    // | TLS 1.1     | 0x3 0x2 |
-    // | TLS 1.2     | 0x3 0x3 |
-    // | TLS 1.3     | 0x3 0x4 |
-
+    // This value means TLS 1.2, and 0x3 0x3 means it
     const version = [0x03, 0x03];
     const versionBuffer = Buffer.from(version);
 
@@ -81,8 +113,6 @@ function buildClientHelloPayload(targetHost) {
     // === Extensions ===
     // The first two bytes mean the total length of the extensions, and the rest bytes are the extensions data.
     //Extensions are defined in IANA Transport Layer Security (TLS) 
-
-    // --- Extensions 
 
     // >>> SNI (Server Name Indication) ---
     // This extension is used to indicate the hostname.
@@ -204,51 +234,19 @@ function buildClientHelloPayload(targetHost) {
         compressionMethodsBuffer,
         extensionsBuffer
     ]);
-
-    // + [version] 2 bytes
-    //
-    // + [random] 32 bytes
-    //
-    // + [sessionIdLength] 1 byte
-    // + [sessionId] 32 bytes
-    //
-    // + [cipherSuitesLength] 2 bytes
-    // + [cipherSuites]
-    // 
-    // + [compressionMethodsLength] 1 byte
-    // + [compressionMethods]
-    // 
-    // + [extensionsLength] 2 bytes
-    // + [extensionsPayload]
 }
 
-function BuildHandshake(host) {
 
-    const handshake = Buffer.from([0x01]); // Handshake Type: Client Hello
-    const bodyLength = Buffer.alloc(3);
-    const clientHelloPayload = buildClientHelloPayload(host);
-    bodyLength.writeUIntBE(clientHelloPayload.length, 0, 3);
 
-    const handshakeMessage = Buffer.concat([
-        handshake,
-        bodyLength,
-        clientHelloPayload
-    ]);
 
-    const recordType = Buffer.from([0x16]); // Record Type: Handshake
-    const version = Buffer.from([0x03, 0x03]);
-    const recordLength = Buffer.alloc(2);
-    recordLength.writeUInt16BE(handshakeMessage.length, 0);
 
-    const tlsRecord = Buffer.concat([
-        recordType,
-        version,
-        recordLength,
-        handshakeMessage
-    ]);
 
-    return tlsRecord;
+// Helper functions to convert values to big-endian buffers
 
+function toUint8BE(value) {
+    const buffer = Buffer.alloc(1);
+    buffer.writeUInt8(value, 0);
+    return buffer;
 }
 
 function toUint16BE(value) {
@@ -257,8 +255,8 @@ function toUint16BE(value) {
     return buffer;
 }
 
-function toUint8BE(value) {
-    const buffer = Buffer.alloc(1);
-    buffer.writeUInt8(value, 0);
+function toUint24BE(value) {
+    const buffer = Buffer.alloc(3);
+    buffer.writeUIntBE(value, 0, 3);
     return buffer;
 }
