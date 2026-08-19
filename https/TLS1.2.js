@@ -243,20 +243,26 @@ function buildClientHelloPayload(targetHost) {
 
 // Helper functions to convert values to big-endian buffers
 
-function toUint8BE(value) {
+function toUint8BE(value) { // One byte placeholder
     const buffer = Buffer.alloc(1);
     buffer.writeUInt8(value, 0);
     return buffer;
 }
 
-function toUint16BE(value) {
+function toUint16BE(value) { // Two bytes placeholder
     const buffer = Buffer.alloc(2);
     buffer.writeUInt16BE(value, 0);
     return buffer;
 }
 
-function toUint24BE(value) {
+function toUint24BE(value) { // Three bytes placeholder
     const buffer = Buffer.alloc(3);
     buffer.writeUIntBE(value, 0, 3);
+    return buffer;
+}
+
+function toUint32BE(value) { // Four bytes placeholder
+    const buffer = Buffer.alloc(4);
+    buffer.writeUInt32BE(value, 0);
     return buffer;
 }
