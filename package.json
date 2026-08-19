@@ -1,0 +1,10 @@
+{
+  "name": "learning",
+  "version": "1.0.0",
+  "description": "",
+  "main": "https/index.js",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
+}
