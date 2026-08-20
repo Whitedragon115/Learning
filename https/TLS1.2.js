@@ -7,6 +7,15 @@ const { toUint8BE, toUint16BE, toUint24BE, toUint32BE } = require('./util/create
 const { toInt } = require('./util/readByte');
 const { formatRecordType, protocolVersion, cipherSuiteType, formatHandshakeType } = require('./types/type');
 
+const config = {
+    logging: {
+        writeLog: true,
+        clock: false,
+        info: true,
+        debug: false
+    },
+}
+
 const jobQueue = [];
 let counter = 0;
 
@@ -64,9 +73,10 @@ async function main() {
 
     // Loop to process jobs in the queue
     while (true) {
-        await sleep(1000);
+        await sleep(100);
         counter++;
-        console.log(`${Date.now()} [${counter}] | Queue Length: ${jobQueue.length}`);
+
+        if(config.logging.clock) console.log(`${Date.now()} [${counter}] | Queue Length: ${jobQueue.length}`);
 
         if (!jobQueue.length) continue;
         const job = jobQueue.shift();
@@ -74,16 +84,18 @@ async function main() {
         switch (job.job) {
             case "send":
                 const writeData = job.data;
+                if(config.logging.info) console.log(`| Executing job: send, data length: ${writeData.length}`);
                 client.write(writeData);
                 const sendLog = `\n[${job.time}] Sent: ${writeData.toString('hex')}`;
-                fs.appendFileSync('log/output.log', sendLog);
+                if(config.logging.writeLog) fs.appendFileSync('log/output.log', sendLog);
                 break;
             case "decode":
                 const decodeData = job.data;
+                if(config.logging.info) console.log(`| Executing job: decode, data length: ${decodeData.length}`);
                 decode(decodeData);
 
                 const receiveLog = `\n[${job.time}] Received: ${decodeData.toString('hex')}`;
-                fs.appendFileSync('log/output.log', receiveLog);
+                if(config.logging.writeLog) fs.appendFileSync('log/output.log', receiveLog);
                 break;
             default:
                 break;
@@ -186,6 +198,8 @@ function decode(data, listParsedData = []) {
             offset += field.length;
         }
 
+        if(config.logging.info) console.log(`| Finished decoding TLS Record Protocol, contentType: ${formatRecordType(record[0].value)}, protocolVersion: ${protocolVersion(record[1].value)}, length: ${toInt(record[2].value)}`);
+
         return {
             data: {
                 contentType: formatRecordType(record[0].value),
@@ -217,6 +231,8 @@ function decode(data, listParsedData = []) {
             field.value = data.slice(offset, offset + field.length);
             offset += field.length;
         }
+
+        if(config.logging.info) console.log(`| Finished decoding Handshake Protocol, handshakeType: ${formatHandshakeType(handshake[0].value)}, handshakeLength: ${toInt(handshake[1].value)}`);
 
         return {
             data: {
@@ -446,6 +462,8 @@ function decodeServerHello(value) {
         offset += field.length;
     }
 
+    if(config.logging.info) console.log(`| Finished decoding ServerHello`);
+
     return {
         data: {
             protocolVersion: protocolVersion(serverHello[0].value),
@@ -463,8 +481,15 @@ function decodeServerHello(value) {
 
 }
 
-function decodeCertificate(body) {
+function decodeCertificate(value) {
 
+    if(config.logging.info) console.log(`| Decoding Certificate...`);
+
+    const data = value.data.body
+    const step = value.step;
+
+    console.log(data)
+    
 }
 
 function decodeServerKeyExchange(body) {
