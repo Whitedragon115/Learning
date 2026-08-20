@@ -287,7 +287,8 @@ function encodeClientHello(targetHost) {
     // https://datatracker.ietf.org/doc/html/rfc5246#appendix-A.5
     const cipherSuites = [
         0x00, 0x3D, // TLS_RSA_WITH_AES_256_CBC_SHA256
-        0x00, 0x6B  // TLS_DHE_RSA_WITH_AES_256_CBC_SHA256
+        0x00, 0x6B,  // TLS_DHE_RSA_WITH_AES_256_CBC_SHA256,
+        // 0xc0, 0x2f // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
     ];
     const cipherSuitesLength = cipherSuites.length;
     const cipherSuitesLengthBuffer = toUint16BE(cipherSuitesLength);
@@ -488,19 +489,65 @@ function decodeCertificate(value) {
     const data = value.data.body
     const step = value.step;
 
-    console.log(data)
-    
+    const certificate = [
+        // Layer 3: Certificate Protocol format
+        { name: "certificateLength", length: 3, value: null },
+        { name: "certificate", length: "<certificateLength>", value: null }
+    ]
+
+    let offset = 0;
+    for (const field of certificate) {
+        if (typeof field.length === "string" && field.length.match(/<.*>/)) {
+            const lengthFieldName = field.length.match(/<(.+)>/)[1];
+            const lengthField = certificate.find(f => f.name === lengthFieldName);
+            field.length = toInt(lengthField.value);
+        }
+        field.value = data.slice(offset, offset + field.length);
+        offset += field.length;
+    }
+
+    if(config.logging.info) console.log(`| Finished decoding Certificate`);
+
+    return {
+        data: {
+            certificateLength: toInt(certificate[0].value),
+            certificate: certificate[1].value,
+        },
+        step: step + offset,
+        raw: value.raw
+    }
 }
 
 function decodeServerKeyExchange(body) {
 
-}
+    // Skip for now
 
-function decodeCertificateRequest(body) {
+    // if(config.logging.info) console.log(`| Decoding ServerKeyExchange...`);
+
+    // const data = body.data.body;
+    // const step = body.step;
+
+    // console.log(data)
+
+    // const serverKeyExchange = [
+    //     // Layer 3: ServerKeyExchange Protocol format
+    //     { name: "keyExchangeData", length: data.length, value: null }
+    // ]
 
 }
 
 function decodeServerHelloDone(body) {
+
+    if(config.logging.info) console.log(`| Decoding ServerHelloDone...`);
+
+    const data = body.data.body;
+    const step = body.step;
+
+    return {
+        data: {},
+        step: step,
+        raw: body.raw
+    }
 
 }
 
