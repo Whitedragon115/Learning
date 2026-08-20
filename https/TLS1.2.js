@@ -1,8 +1,34 @@
 const net = require('node:net');
 const crypto = require('node:crypto');
+const fs = require('node:fs');
 
-const jobQueue = [{ job: "send", data: encodeTLS("example.com", 0x16, 0x01), time: Date.now(), timeLog: [] }];
+const { sleep } = require('./util/time');
+const { toUint8BE, toUint16BE, toUint24BE, toUint32BE } = require('./util/createByte');
+const { toInt } = require('./util/readByte');
+const { formatRecordType, protocolVersion, cipherSuiteType, formatHandshakeType } = require('./types/type');
+
+const jobQueue = [];
 let counter = 0;
+
+const initialJob = {
+    host: "example.com",
+    port: 443,
+    recordType: 0x16, // Handshake
+    handshakeType: 0x01 // ClientHello
+}
+
+jobQueue.push({
+    job: "send",
+    data: encode({
+        host: initialJob.host,
+        recordType: initialJob.recordType,
+        handshakeType: initialJob.handshakeType
+    }),
+    time: Date.now(),
+    timeLog: [Date.now()]
+});
+
+fs.writeFileSync('log/output.log', '');
 
 main();
 
@@ -10,13 +36,11 @@ async function main() {
 
     const delayTime = 500;
 
-    const host = "example.com"
-    const port = 443;
-
-    const client = net.createConnection({ host, port }, () => {
-        console.log(`Connected to ${host}:${port}`);
+    const client = net.createConnection({ host: initialJob.host, port: initialJob.port }, () => {
+        console.log(`Connected to ${initialJob.host}:${initialJob.port}`);
     });
 
+    // Handle incoming data from the server
     client.on('data', async (data) => {
 
         const nowTime = Date.now();
@@ -38,35 +62,43 @@ async function main() {
         }
     });
 
+    // Loop to process jobs in the queue
     while (true) {
         await sleep(1000);
-        if (jobQueue.length) {
-            const job = jobQueue.shift();
-
-            switch (job.job) {
-                case "send":
-                    client.write(job.data);
-                    console.log('Sent data to server.');
-                    break;
-                case "decode":
-                    const decodedData = decodeTLS(job);
-                    console.log(decodedData)
-                    break;
-                default:
-                    break;
-            }
-        }
         counter++;
         console.log(`${Date.now()} [${counter}] | Queue Length: ${jobQueue.length}`);
+
+        if (!jobQueue.length) continue;
+        const job = jobQueue.shift();
+
+        switch (job.job) {
+            case "send":
+                const writeData = job.data;
+                client.write(writeData);
+                const sendLog = `\n[${job.time}] Sent: ${writeData.toString('hex')}`;
+                fs.appendFileSync('log/output.log', sendLog);
+                break;
+            case "decode":
+                const decodeData = job.data;
+                decode(decodeData);
+
+                const receiveLog = `\n[${job.time}] Received: ${decodeData.toString('hex')}`;
+                fs.appendFileSync('log/output.log', receiveLog);
+                break;
+            default:
+                break;
+        }
     }
 }
 
-function encodeTLS(host, recordType, handshakeType) {
+function encode(data) {
+
+    const { host, recordType, handshakeType } = data;
 
     // >>> Layer 2: Handshake Protocol
     // Information: https://datatracker.ietf.org/doc/html/rfc5246#section-7.4
     const handshaketype = Buffer.from([handshakeType]); // 0x01 means ClientHello message type
-    const body = buildClientHelloPayload(host);
+    const body = encodeClientHello(host);
     const bodyLength = toUint24BE(body.length);
 
     const handshakeMessage = Buffer.concat([
@@ -89,28 +121,58 @@ function encodeTLS(host, recordType, handshakeType) {
     ]);
 
     return tlsRecord;
-
 }
 
-function decodeTLS(job) {
-
-    const data = job.data;
+function decode(data, listParsedData = []) {
 
     // === Process decoding ===
     const record = decodeRecord(data);
-    const handshake = decodeHandshake(record.fragment);
-    const body = handshake.body;
+    const handshake = decodeHandshake(record);
+    let body = null;
 
-    return {
-        record: record,
-        handshake: handshake,
-        body: body,
+    switch (handshake.data.handshakeType) {
+        case "ServerHello":
+            body = decodeServerHello(handshake);
+            break;
+        case "Certificate":
+            body = decodeCertificate(handshake);
+            break;
+        case "ServerKeyExchange":
+            body = decodeServerKeyExchange(handshake);
+            break;
+        case "CertificateRequest":
+            body = decodeCertificateRequest(handshake);
+            break;
+        case "ServerHelloDone":
+            body = decodeServerHelloDone(handshake);
+            break;
+        default:
+            break;
     }
+
+    const returnData = {
+        type: handshake.data.handshakeType,
+        data: {
+            record: record,
+            handshake: handshake,
+            body: body,
+            blockLength: body.step
+        }
+    }
+
+    if (data.slice(body.step).length > 0) {
+        const remainingData = data.slice(body.step);
+        const parsedRemainingData = decode(remainingData, listParsedData);
+        return listParsedData.concat([returnData], parsedRemainingData);
+    }
+
+    return [returnData];
 
     // === Decoder ===
 
     // >>> Layer 1: Decode TLS Record Protocol
     function decodeRecord(data) {
+
         const record = [
             // Layer 1: TLS Record Protocol format
             { name: "contentType", length: 1, value: null },
@@ -125,82 +187,53 @@ function decodeTLS(job) {
         }
 
         return {
-            contentType: formatRecordType(record[0].value),
-            protocolVersion: formatVersion(record[1].value),
-            length: toInt(record[2].value),
+            data: {
+                contentType: formatRecordType(record[0].value),
+                protocolVersion: protocolVersion(record[1].value),
+                length: toInt(record[2].value),
 
-            // The rest of the data
-            fragment: data.slice(offset, offset + toInt(record[2].value))
+                // The rest of the data
+                fragment: data.slice(offset, offset + toInt(record[2].value)),
+            },
+            step: offset,
+            raw: data,
         };
     };
 
     // >>> Layer 2: Decode Handshake Protocol
-    function decodeHandshake(data) {
+    function decodeHandshake(value) {
+
+        const data = value.data.fragment;
+        const step = value.step;
+
         const handshake = [
             // Layer 2: Handshake Protocol format
             { name: "handshakeType", length: 1, value: null },
             { name: "handshakeLength", length: 3, value: null },
         ]
 
-        let offset = 0
+        let offset = 0;
         for (const field of handshake) {
             field.value = data.slice(offset, offset + field.length);
             offset += field.length;
         }
 
         return {
-            handshakeType: formatHandshakeType(handshake[0].value),
-            handshakeLength: toInt(handshake[1].value),
+            data: {
+                handshakeType: formatHandshakeType(handshake[0].value),
+                handshakeLength: toInt(handshake[1].value),
 
-            // The rest of the data, body
-            body: data.slice(offset, offset + toInt(handshake[1].value))
+                // The rest of the data, body
+                body: value.raw.slice(offset + step, offset + step + toInt(handshake[1].value)),
+            },
+            step: step + offset,
+            raw: value.raw
         };
-    }
-
-    // === Readable format function
-
-    function formatRecordType(buffer) {
-        const value = buffer.readUInt8(0);
-        switch (value) {
-            case 20: return "ChangeCipherSpec";
-            case 14: return "Alert";
-            case 22: return "Handshake";
-            case 13: return "ApplicationData";
-            default: return "Unknown";
-        }
-    }
-
-    function formatVersion(buffer) {
-        const value = buffer.readUInt16BE(0);
-        switch (value) {
-            case 0x0300: return "SSL 3.0";
-            case 0x0301: return "TLS 1.0";
-            case 0x0302: return "TLS 1.1";
-            case 0x0303: return "TLS 1.2";
-            case 0x0304: return "TLS 1.3";
-            default: return "Unknown";
-        }
-    }
-
-    function formatHandshakeType(buffer) {
-        const value = buffer.readUInt8(0);
-        switch (value) {
-            case 0: return "HelloRequest";
-            case 1: return "ClientHello";
-            case 2: return "ServerHello";
-            case 11: return "Certificate";
-            case 12: return "ServerKeyExchange";
-            case 13: return "CertificateRequest";
-            case 14: return "ServerHelloDone";
-            case 15: return "CertificateVerify";
-            case 16: return "ClientKeyExchange";
-            case 20: return "Finished";
-            default: return "Unknown";
-        }
     }
 }
 
-function buildClientHelloPayload(targetHost) {
+// ===== Send clientHello
+function encodeClientHello(targetHost) {
 
     // >>>>>>>>>>>>>>>>>>>> Payload Structure
     // [2x version]
@@ -384,37 +417,66 @@ function buildClientHelloPayload(targetHost) {
     ]);
 }
 
-// Helper functions to convert values to big-endian buffers
+// ===== Decode ServerHello, ServerCertificate, ServerKeyExchange, CertificateRequest, ServerHelloDone
+function decodeServerHello(value) {
 
-function toUint8BE(value) { // One byte placeholder
-    const buffer = Buffer.alloc(1);
-    buffer.writeUInt8(value, 0);
-    return buffer;
+    const body = value.data.body;
+    const step = value.step;
+
+    const serverHello = [
+        // Layer 3: ServerHello Protocol format
+        { name: "protocolVersion", length: 2, value: null },
+        { name: "random", length: 32, value: null },
+        { name: "sessionIdLength", length: 1, value: null },
+        { name: "sessionId", length: "<sessionIdLength>", value: null },
+        { name: "cipherSuite", length: 2, value: null },
+        { name: "compressionMethod", length: 1, value: null },
+        { name: "extensionsLength", length: 2, value: null },
+        { name: "extensions", length: "<extensionsLength>", value: null }
+    ]
+
+    let offset = 0;
+    for (const field of serverHello) {
+        if (typeof field.length === "string" && field.length.match(/<.*>/)) {
+            const lengthFieldName = field.length.match(/<(.+)>/)[1];
+            const lengthField = serverHello.find(f => f.name === lengthFieldName);
+            field.length = toInt(lengthField.value);
+        }
+        field.value = body.slice(offset, offset + field.length);
+        offset += field.length;
+    }
+
+    return {
+        data: {
+            protocolVersion: protocolVersion(serverHello[0].value),
+            random: serverHello[1].value,
+            sessionIdLength: toInt(serverHello[2].value),
+            sessionId: serverHello[3].value,
+            cipherSuite: cipherSuiteType(serverHello[4].value),
+            compressionMethod: serverHello[5].value,
+            extensionsLength: toInt(serverHello[6].value),
+            extensions: serverHello[7].value,
+        },
+        step: step + offset,
+        raw: value.raw
+    }
+
 }
 
-function toUint16BE(value) { // Two bytes placeholder
-    const buffer = Buffer.alloc(2);
-    buffer.writeUInt16BE(value, 0);
-    return buffer;
+function decodeCertificate(body) {
+
 }
 
-function toUint24BE(value) { // Three bytes placeholder
-    const buffer = Buffer.alloc(3);
-    buffer.writeUIntBE(value, 0, 3);
-    return buffer;
+function decodeServerKeyExchange(body) {
+
 }
 
-function toUint32BE(value) { // Four bytes placeholder
-    const buffer = Buffer.alloc(4);
-    buffer.writeUInt32BE(value, 0);
-    return buffer;
+function decodeCertificateRequest(body) {
+
 }
 
-function toInt(buffer) {
-    const bufferLength = buffer.length;
-    return buffer.readUIntBE(0, bufferLength);
+function decodeServerHelloDone(body) {
+
 }
 
-async function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
+// ===== Send ClientKeyExchange, ChangeCipherSpec, Finished
